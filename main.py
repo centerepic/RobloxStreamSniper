@@ -1,6 +1,36 @@
 import requests
-import json
+import json, os, threading, time, sys
 from colorama import Fore
+
+THUMBNAIL_THREADS_MAX = 12
+
+cursor = None
+server_count = 0
+player_count = 0
+players_scanned = 0
+page_count = 0
+
+all_thumbs = []
+all_servers = []
+
+class ProgressBar:
+    def __init__(self, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█', printEnd = "\r"):
+        self.total = total
+        self.prefix = prefix
+        self.suffix = suffix
+        self.decimals = decimals
+        self.length = length
+        self.fill = fill
+        self.printEnd = printEnd
+        self.iteration = 0
+
+    def print(self):
+        percent = ("{0:." + str(self.decimals) + "f}").format(100 * (self.iteration / float(self.total)))
+        filledLength = int(self.length * self.iteration // self.total)
+        bar = self.fill * filledLength + '-' * (self.length - filledLength)
+        print(f'\rProgress: |{bar}| {percent}% {self.suffix} ({players_scanned} / {player_count})', end = self.printEnd)
+        if self.iteration == self.total: 
+            print()
 
 def fetch_thumbs(tokens):
     url = "https://thumbnails.roblox.com/v1/batch"
@@ -30,8 +60,8 @@ def fetch_thumbs(tokens):
         for item in data["data"]:
             if item["state"] == "Completed":
                 thumbs.append(item["imageUrl"])
-            else:
-                print(f"{Fore.RED}Error fetching thumbnail {item['requestId']}{Fore.RESET}")
+            #else:
+                #print(f"{Fore.RED}Error fetching thumbnail {item['requestId']}{Fore.RESET}")
         
         return thumbs
     else:
@@ -94,12 +124,6 @@ thumbnail_url = thumbnail_data["data"][0]["imageUrl"]
 
 print(f"{Fore.YELLOW}Initiating server scanning...{Fore.RESET}")
 
-cursor = None
-server_count = 0
-page_count = 0
-
-all_thumbs = []
-
 while True:
     page_count += 1
     print(f"{Fore.YELLOW}Page: {Fore.BLUE}{page_count}{Fore.RESET}")
@@ -116,28 +140,93 @@ while True:
     data = response.json()
 
     for server in data["data"]:
+        all_servers.append(server)
         server_count += 1
-        print(f"{Fore.YELLOW}Thumbnails cached: {Fore.BLUE}{len(all_thumbs)}{Fore.RESET}")
+        player_count += server["playing"]
+        os.system("cls")
         print(f"{Fore.YELLOW}Indexing server: {Fore.BLUE}{server_count} | {server['id']}{Fore.RESET}")
-        thumbs = fetch_thumbs(server["playerTokens"])
-
-        if thumbs == None:
-            print(f"{Fore.RED}Failed to fetch player thumbnails{Fore.RESET}")
-            continue
-
-        for thumb in thumbs:
-            all_thumbs.append([thumb, server["id"]])
-
-    print(f"{Fore.YELLOW}Checking for match in {Fore.BLUE}{len(all_thumbs)}{Fore.YELLOW} thumbnails...{Fore.RESET}")
-    for thumb in all_thumbs:
-        if thumb[0] == thumbnail_url:
-            print(f"{Fore.GREEN}Match found{Fore.RESET}")
-            print(f"{Fore.YELLOW}Server: {Fore.BLUE}{server['id']}{Fore.RESET} | {server['ping']}ms | {server['playing']}/{server['maxPlayers']} players")
-            print(f"{Fore.YELLOW}Server URL: {Fore.BLUE}roblox://experiences/start?placeId={placeId}&gameInstanceId={thumb[1]}{Fore.RESET}")
-            exit(0)
+        print(f"{Fore.YELLOW}Players indexed: {Fore.BLUE}{player_count}{Fore.RESET}")
 
     if data["nextPageCursor"] == None:
-        print(f"{Fore.RED}All servers indexed, no match found :({Fore.RESET}")
+        print(f"{Fore.YELLOW}All servers indexed, scanning...{Fore.RESET}")
         break
     else:
         cursor = data["nextPageCursor"]
+
+os.system("cls")
+print(f"{Fore.YELLOW}Servers indexed: {Fore.BLUE}{server_count}{Fore.RESET}")
+print(f"{Fore.YELLOW}Players indexed: {Fore.BLUE}{player_count}{Fore.RESET}")
+print(f"{Fore.RED}Initiating thumbnail scanning, this may take a while...{Fore.RESET}")
+
+time.sleep(2)
+os.system("cls")
+
+def check_thumb_match(thumbnail_link):
+    if thumbnail_link == thumbnail_url:
+        return True
+
+lock = threading.Lock()
+progress = ProgressBar(server_count, prefix = 'Progress:', suffix = 'Complete', length = 50)
+
+def fetch_thumbs_threaded(server):
+    global all_thumbs
+    global players_scanned
+    thumbs = fetch_thumbs(server["playerTokens"])
+    lock.acquire()
+    players_scanned += server["playing"]
+    for thumb in thumbs:
+        all_thumbs.append([thumb, server])
+
+    lock.release()
+
+threads = []
+
+print("Enter scantype: ")
+print(" 1. Largest to smallest")
+print(" 2. Smallest to largest")
+print(" 3. Interwoven (largest to smallest every other)")
+
+scantype = input("Scantype: ")
+
+if scantype == "1":
+    all_servers = sorted(all_servers, key=lambda x: x["playing"], reverse=True)
+elif scantype == "2":
+    all_servers = sorted(all_servers, key=lambda x: x["playing"])
+elif scantype == "3":
+    temp_list = []
+    for i in range(0, len(all_servers) // 2):
+        temp_list.append(all_servers[i])
+        temp_list.append(all_servers[-i])
+
+    all_servers = temp_list
+
+for server in all_servers:
+    while True:
+        if threading.active_count() - 1 < THUMBNAIL_THREADS_MAX:
+            thread = threading.Thread(target=fetch_thumbs_threaded, args=(server,))
+            thread.start()
+            threads.append(thread)
+            break
+        else:
+            time.sleep(0.1)
+
+    progress.iteration += 1
+    progress.print()
+
+    for thread in threads:
+        if not thread.is_alive():
+            threads.remove(thread)
+            break
+    
+    for thumb in all_thumbs:
+        if check_thumb_match(thumb[0]):
+
+            for thread in threads:
+                thread.join()
+
+            server = thumb[1]
+
+            print(f"{Fore.GREEN}Match found{Fore.RESET}")
+            print(f"{Fore.YELLOW}Server: {Fore.BLUE}{server['id']}{Fore.RESET} | {server['ping']}ms | {server['playing']}/{server['maxPlayers']} players")
+            print(f"{Fore.YELLOW}Server URL: {Fore.BLUE}roblox://experiences/start?placeId={placeId}&gameInstanceId={server['id']}{Fore.RESET}")
+            exit(0)
