@@ -1,3 +1,7 @@
+# Roblox has patched this method as of late 2024 due to the game API only returning a max of 5 thumbnails in a server.
+## There is no other method I am aware of currently to make this work.
+<br>
+
 # RobloxStreamSniper
 Simple Roblox stream sniper, wrote this because I was bored and didn't find any other working ones.  
   
